@@ -1,5 +1,13 @@
-import React, { useState, useEffect, useMemo, useCallback } from "react";
+import React, {
+  useState,
+  useEffect,
+  useMemo,
+  useCallback,
+  useRef,
+} from "react";
 import { openDB } from "idb";
+import CustomerRegister from "@/components/CustomerRegister";
+import Select from "react-select";
 
 // --- IndexedDB helper functions ---
 async function initDB() {
@@ -63,13 +71,24 @@ export default function Home() {
   const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [cart, setCart] = useState([]);
+  const cartRef = useRef(null);
+  const prevCartLength = useRef(cart.length);
+  const [highlightedRowId, setHighlightedRowId] = useState(null);
+
   const addToCart = useCallback((batch, qty = 1) => {
     setCart((cart) => {
-      const existing = cart.find((c) => c.product_batch_id === batch.id || c.product_batch_id === batch.product_batch_id);
+      const existing = cart.find(
+        (c) =>
+          c.product_batch_id === batch.id ||
+          c.product_batch_id === batch.product_batch_id
+      );
       if (existing) {
         return cart.map((c) =>
           c.product_batch_id === (batch.id || batch.product_batch_id)
-            ? { ...c, quantity: Math.min(c.quantity + qty, batch.stock ?? c.stock) }
+            ? {
+                ...c,
+                quantity: Math.min(c.quantity + qty, batch.stock ?? c.stock),
+              }
             : c
         );
       } else {
@@ -91,7 +110,11 @@ export default function Home() {
 
   function updateDiscount(batchId, discountPercent) {
     const d = Math.max(0, Math.min(100, Number(discountPercent) || 0));
-    setCart((prev) => prev.map((c) => (c.product_batch_id === batchId ? { ...c, discount: d } : c)));
+    setCart((prev) =>
+      prev.map((c) =>
+        c.product_batch_id === batchId ? { ...c, discount: d } : c
+      )
+    );
   }
 
   function removeFromCart(batchId) {
@@ -103,14 +126,46 @@ export default function Home() {
     if (n <= 0) return removeFromCart(batchId);
     setCart((prev) =>
       prev.map((c) =>
-        c.product_batch_id === batchId ? { ...c, quantity: Math.min(n, c.stock ?? n) } : c
+        c.product_batch_id === batchId
+          ? { ...c, quantity: Math.min(n, c.stock ?? n) }
+          : c
       )
     );
   }
-  const [customers] = useState([{ id: 0, name: "Walk-in" }]);
+  const [customers, setCustomers] = useState([{ id: 0, name: "Walk-in" }]);
   const [selectedCustomerId, setSelectedCustomerId] = useState(customers[0].id);
   const [isOnline, setIsOnline] = useState(true);
-  const [globalDiscount, setGlobalDiscount] = useState(0); // percent
+  const [globalDiscount, setGlobalDiscount] = useState(1); // percent
+  const [showCustomerDialog, setShowCustomerDialog] = useState(false);
+
+  const options = customers.map((c) => ({
+    value: c.id,
+    label: ` ${c.name}${c.phone ? ` (${c.phone})` : ""}`,
+  }));
+
+  const selected =
+    options.find((opt) => opt.value === selectedCustomerId) || null;
+  const loadCustomers = async () => {
+    try {
+      const res = await fetch("/api/customers");
+      if (!res.ok) throw new Error("Failed to load customers");
+      const data = await res.json();
+      setCustomers(data.customers);
+    } catch (err) {
+      console.error("Failed to load customers:", err);
+      // Keep default Walk-in customer if API fails
+      setCustomers([{ id: 1, name: "Walk-in" }]);
+    }
+  };
+
+  useEffect(() => {
+    loadCustomers();
+  }, []);
+
+  const setLastCustomer = () =>
+    setSelectedCustomerId(
+      customers.length > 0 ? Math.max(...customers.map((c) => c.id + 1)) : 1
+    );
 
   const filtered = useMemo(() => {
     const q = (query || "").trim().toLowerCase();
@@ -156,15 +211,32 @@ export default function Home() {
       cancelled = true;
     };
   }, [page, pageSize, query]);
-    // --- Totals calculations (ensure variables are defined for UI and receipt)
-    const subtotalBeforeLineDiscount = cart.reduce((s, it) => s + it.price * it.quantity, 0);
-    const lineDiscountAmount = +cart
-      .reduce((s, it) => s + (it.discount ? Number(it.discount) : 0) * (it.price * it.quantity) / 100, 0)
-      .toFixed(2);
-    const grossTotal = +(subtotalBeforeLineDiscount - Number(lineDiscountAmount)).toFixed(2);
-    const globalDiscPercent = Math.max(0, Math.min(100, Number(globalDiscount) || 0));
-    const globalDiscountAmount = +(grossTotal * (globalDiscPercent / 100)).toFixed(2);
-    const netAmount = +(grossTotal - globalDiscountAmount).toFixed(2);
+  // --- Totals calculations (ensure variables are defined for UI and receipt)
+  const subtotalBeforeLineDiscount = cart.reduce(
+    (s, it) => s + it.price * it.quantity,
+    0
+  );
+  const lineDiscountAmount = +cart
+    .reduce(
+      (s, it) =>
+        s +
+        ((it.discount ? Number(it.discount) : 0) * (it.price * it.quantity)) /
+          100,
+      0
+    )
+    .toFixed(2);
+  const grossTotal = +(
+    subtotalBeforeLineDiscount - Number(lineDiscountAmount)
+  ).toFixed(2);
+  const globalDiscPercent = Math.max(
+    0,
+    Math.min(100, Number(globalDiscount) || 0)
+  );
+  const globalDiscountAmount = +(
+    grossTotal *
+    (globalDiscPercent / 100)
+  ).toFixed(2);
+  const netAmount = +(grossTotal - globalDiscountAmount).toFixed(2);
   function printReceipt() {
     const customer = customers.find((c) => c.id === selectedCustomerId);
     const win = window.open("", "PRINT", "height=600,width=400");
@@ -179,14 +251,24 @@ export default function Home() {
     cart.forEach((item) => {
       const itDisc = item.discount ? Number(item.discount) : 0;
       const line = (item.price * item.quantity * (1 - itDisc / 100)).toFixed(2);
-      win.document.write(`<div>${item.productName} x${item.quantity} — Rs ${line}</div>`);
+      win.document.write(
+        `<div>${item.productName} x${item.quantity} — Rs ${line}</div>`
+      );
     });
     win.document.write("<hr/>");
-  win.document.write(`<div>Subtotal: Rs ${subtotalBeforeLineDiscount.toFixed(2)}</div>`);
-  win.document.write(`<div>Line Discount: Rs ${Number(lineDiscountAmount).toFixed(2)}</div>`);
-  win.document.write(`<div>Gross Total: Rs ${grossTotal.toFixed(2)}</div>`);
-  win.document.write(`<div>Global discount (${globalDiscPercent}%): Rs ${globalDiscountAmount.toFixed(2)}</div>`);
-  win.document.write(`<div>Net Amount: Rs ${netAmount.toFixed(2)}</div>`);
+    win.document.write(
+      `<div>Subtotal: Rs ${subtotalBeforeLineDiscount.toFixed(2)}</div>`
+    );
+    win.document.write(
+      `<div>Line Discount: Rs ${Number(lineDiscountAmount).toFixed(2)}</div>`
+    );
+    win.document.write(`<div>Gross Total: Rs ${grossTotal.toFixed(2)}</div>`);
+    win.document.write(
+      `<div>Global discount (${globalDiscPercent}%): Rs ${globalDiscountAmount.toFixed(
+        2
+      )}</div>`
+    );
+    win.document.write(`<div>Net Amount: Rs ${netAmount.toFixed(2)}</div>`);
     win.document.write('<hr/><div style="text-align:center">Thank you!</div>');
     win.document.write("</body></html>");
     win.document.close();
@@ -197,10 +279,10 @@ export default function Home() {
     if (cart.length === 0) return alert("Cart is empty");
     const sale = {
       items: cart,
-  total: netAmount,
-  globalDiscount: globalDiscPercent,
-  globalDiscountAmount,
-  lineDiscountAmount,
+      total: netAmount,
+      globalDiscount: globalDiscPercent,
+      globalDiscountAmount,
+      lineDiscountAmount,
       customerId: selectedCustomerId,
       createdAt: Date.now(),
     };
@@ -288,6 +370,24 @@ export default function Home() {
       window.removeEventListener("online", syncOfflineSales);
     };
   }, [handleKeyDown]);
+
+  // When a new item is added to the cart (length increases), scroll the cart container to bottom
+  useEffect(() => {
+    try {
+      if (!cartRef.current) return;
+      if (cart.length > prevCartLength.current) {
+        cartRef.current.scrollTop = cartRef.current.scrollHeight;
+        // highlight the newly added bottom row briefly
+        const last = cart[cart.length - 1];
+        if (last) {
+          setHighlightedRowId(last.product_batch_id);
+          setTimeout(() => setHighlightedRowId(null), 1200);
+        }
+      }
+    } finally {
+      prevCartLength.current = cart.length;
+    }
+  }, [cart.length, cart]);
 
   useEffect(() => {
     // Check if window is defined (client-side)
@@ -403,21 +503,32 @@ export default function Home() {
           </section>
 
           <aside className="sm:col-span-5 bg-white rounded-lg shadow flex flex-col p-2 sm:p-4 h-[85vh] sm:h-[85vh]">
-            <div className="mb-4">
-              <select
-                value={selectedCustomerId}
-                onChange={(e) => setSelectedCustomerId(Number(e.target.value))}
-                className="w-full border rounded p-2"
+            <div className="mb-4 flex gap-2">
+              <Select
+                className="flex-1"
+                value={selected}
+                onChange={(option) => setSelectedCustomerId(option?.value ?? 1)}
+                options={options}
+                placeholder="Search or select customer..."
+                isClearable
+                isSearchable
+                styles={{
+                  control: (base) => ({
+                    ...base,
+                    borderRadius: "0.5rem",
+                    padding: "2px",
+                  }),
+                }}
+              />
+              <button
+                onClick={() => setShowCustomerDialog(true)}
+                className="px-3 py-1 bg-green-600 hover:bg-green-700 text-white font-bold rounded shadow shadow-green-300"
               >
-                {customers.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
+                Register New
+              </button>
             </div>
 
-            <div className="flex-1 overflow-auto">
+            <div ref={cartRef} className="flex-1 overflow-auto">
               <div className=" border-b bg-slate-50">
                 <div className="flex justify-between items-center text-sm font-semibold text-gray-700">
                   <div>Product</div>
@@ -427,20 +538,36 @@ export default function Home() {
                   </div>
                 </div>
               </div>
-              {cart.map((item) => {
+              {cart.map((item, index) => {
                 const disc = item.discount ? Number(item.discount) : 0;
                 const lineTotal = item.price * item.quantity * (1 - disc / 100);
                 return (
-                  <div key={item.product_batch_id} className="mb-1 p-1 border-b">
-                    <div className="flex justify-between items-center">
+                  <div
+                    key={item.product_batch_id}
+                    className={`p-1 hover:bg-blue-100 bg-slate-100 ${
+                      highlightedRowId === item.product_batch_id
+                        ? "cart-glow"
+                        : ""
+                    }`}
+                  >
+                    <div className="flex justify-between items-center border-b">
                       <div className="min-w-0">
-                        <div className="font-medium text-sm truncate">{item.productName}</div>
-                        <div className="text-xs text-gray-600">Rs {item.price.toFixed(2)} × {item.quantity} = <span className=" font-bold">Rs {lineTotal.toFixed(2)}</span></div>
+                        <div className="font-medium text-sm truncate">
+                          {index + 1}. {item.productName}
+                        </div>
+                        <div className="text-xs text-gray-600">
+                          Rs {item.price.toFixed(2)} × {item.quantity} ={" "}
+                          <span className=" font-bold">
+                            Rs {lineTotal.toFixed(2)}
+                          </span>
+                        </div>
                       </div>
                       <div className="flex items-center space-x-2">
                         <button
-                          onClick={() => updateQty(item.product_batch_id, item.quantity - 1)}
-                          className="px-2 py-0.5 bg-gray-200 hover:bg-gray-300 font-medium rounded text-sm"
+                          onClick={() =>
+                            updateQty(item.product_batch_id, item.quantity - 1)
+                          }
+                          className="px-2 py-0.5 bg-gray-300 hover:bg-gray-400 font-medium rounded text-sm"
                         >
                           -
                         </button>
@@ -459,8 +586,10 @@ export default function Home() {
                           className="w-12 text-center border rounded p-0.5 text-sm"
                         />
                         <button
-                          onClick={() => updateQty(item.product_batch_id, item.quantity + 1)}
-                          className="px-2 py-0.5 bg-gray-200 hover:bg-gray-300 font-medium rounded text-sm"
+                          onClick={() =>
+                            updateQty(item.product_batch_id, item.quantity + 1)
+                          }
+                          className="px-2 py-0.5 bg-gray-300 hover:bg-gray-400 font-medium rounded text-sm"
                         >
                           +
                         </button>
@@ -469,21 +598,30 @@ export default function Home() {
                           min="0"
                           max="100"
                           value={disc}
-                            onFocus={(e) => e.target.select()}
-                          onChange={(e) => updateDiscount(item.product_batch_id, e.target.value)}
+                          onFocus={(e) => e.target.select()}
+                          onChange={(e) =>
+                            updateDiscount(
+                              item.product_batch_id,
+                              e.target.value
+                            )
+                          }
                           className="w-12 text-center border rounded p-0.5 text-sm"
                           title="Discount %"
                         />
-                        <button onClick={() => removeFromCart(item.product_batch_id)} className="ml-1 text-red-500 text-sm">×</button>
+                        <button
+                          onClick={() => removeFromCart(item.product_batch_id)}
+                          className=" text-md hover:shadow-red-800 text-red-200 bg-red-500 hover:bg-red-600 w-5 h-5 rounded-full "
+                        >
+                          ×
+                        </button>
                       </div>
                     </div>
-                  
                   </div>
                 );
               })}
             </div>
 
-            <div className="border-t pt-4 space-y-2">
+            <div className=" pt-1 space-y-1">
               <div className="flex justify-between">
                 <span>Subtotal :</span>
                 <span>Rs {subtotalBeforeLineDiscount.toFixed(2)}</span>
@@ -508,12 +646,13 @@ export default function Home() {
                     max="100"
                     value={globalDiscount}
                     onChange={(e) => setGlobalDiscount(e.target.value)}
-
-                      onFocus={(e) => e.target.select()}
-                    className="w-20 text-center border rounded p-1"
+                    onFocus={(e) => e.target.select()}
+                    className="w-14 text-center border rounded p-1"
                   />
                 </div>
-                <div className="text-sm">Rs {globalDiscountAmount.toFixed(2)}</div>
+                <div className="text-sm">
+                  Rs {globalDiscountAmount.toFixed(2)}
+                </div>
               </div>
 
               <div className="flex justify-between font-bold pt-2">
@@ -539,6 +678,12 @@ export default function Home() {
           </aside>
         </div>
       </div>
+      <CustomerRegister
+        open={showCustomerDialog}
+        onClose={() => {
+          setShowCustomerDialog(false), loadCustomers(), setLastCustomer();
+        }}
+      />
     </div>
   );
 }
